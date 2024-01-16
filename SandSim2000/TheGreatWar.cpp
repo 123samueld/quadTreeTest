@@ -1,175 +1,216 @@
-#include <iostream>
-#include <vector>
 #include <SFML/Graphics.hpp>
-#include "MapEditor.h"
-#include <string>
+#include <memory>
+#include <vector>
+#include <iostream>
+#include <SFML/System/Clock.hpp>
+#include <SFML/System/Sleep.hpp>
 
-#include "GameState.h"
-#include "AnimationManager.h"
+class Quadtree {
+public:
+    sf::FloatRect bounds;
+    std::vector<std::shared_ptr<Quadtree>> children;
+    int depth;
 
-constexpr double PI = 3.14159265358979323846;
-const float windowWidth = 800.0f;
-const float windowHeight = 600.0f;
+    Quadtree(sf::FloatRect rect, int initialDepth) :
+        bounds(rect), depth(initialDepth) {
+    }
 
-struct MainMenuOptions
-{
-    bool mainMenu = true;
-    bool play = false;
-    bool editMap = false;
+    sf::FloatRect calculateChildRect(int childIndex) const {
+        float halfWidth = bounds.width / 2.0f;
+        float halfHeight = bounds.height / 2.0f;
+
+        switch (childIndex) {
+        case 0: // Top Left
+            return sf::FloatRect(bounds.left, bounds.top, halfWidth, halfHeight);
+        case 1: // Top Right
+            return sf::FloatRect(bounds.left + halfWidth, bounds.top, halfWidth, halfHeight);
+        case 2: // Bottom Left
+            return sf::FloatRect(bounds.left, bounds.top + halfHeight, halfWidth, halfHeight);
+        case 3: // Bottom Right
+            return sf::FloatRect(bounds.left + halfWidth, bounds.top + halfHeight, halfWidth, halfHeight);
+        default:
+            throw std::invalid_argument("Invalid childIndex"); // Handle invalid index
+        }
+    }
+
+
+    void subdivide() {
+        if (!children.empty() || depth <= 0) return;
+
+        for (int i = 0; i < 4; ++i) {
+            sf::FloatRect childRect = calculateChildRect(i);
+            children.push_back(std::make_shared<Quadtree>(childRect, depth - 1));
+            children.back()->subdivide(); 
+        }
+    }
+
+    void draw(sf::RenderWindow& window) const {
+        sf::RectangleShape rect(sf::Vector2f(bounds.width, bounds.height));
+        rect.setPosition(bounds.left, bounds.top);
+        rect.setFillColor(sf::Color::Transparent);
+        rect.setOutlineThickness(1.0f);
+
+        sf::Color color;
+        if (depth == 0) {
+            color = sf::Color::Red;
+        }
+        else if (depth % 2 == 0) {
+            color = sf::Color::Green;
+        }
+        else {
+            color = sf::Color::Blue;
+        }
+        rect.setOutlineColor(color);
+  
+        for (const auto& child : children) {
+            child->draw(window);
+        }     
+        window.draw(rect);
+    }
 };
 
-void mainMenu(sf::RenderWindow& window, MainMenuOptions& options) {
-    std::string selectedMenuOption = "";
-    sf::Event event;
-    while (window.pollEvent(event)) {
-        if (event.type == sf::Event::Closed)
-            window.close();
-        if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::Escape)
-            window.close();
-    }
+class Camera {
+public:
+    sf::Vector2f position;
+    float zoomFactor;
+    float scrollSpeed;
 
-    window.clear(sf::Color::Black);
-
-    sf::Font font;
-    if (!font.loadFromFile("../resources/Fonts/WorldAtWar.ttf")) std::cerr << "Failed to load font!" << std::endl; 
-    sf::Text title("The Great War", font);
-    title.setCharacterSize(100);
-    title.setFillColor(sf::Color::White);
-    title.setPosition((window.getSize().x - title.getLocalBounds().width) / 2, 50);
-    window.draw(title);
-
-    sf::Texture backgroundImgTexture;
-    if (!backgroundImgTexture.loadFromFile("../resources/images/Utilities/OpeningImage.jpg")) {
-        std::cerr << "Failed to load Opening Image texture!" << std::endl;
-    }
-
-    sf::Sprite backgroundImgSprite(backgroundImgTexture);
-    backgroundImgSprite.setOrigin(backgroundImgSprite.getLocalBounds().width / 2, backgroundImgSprite.getLocalBounds().height / 2);
-    backgroundImgSprite.setPosition(window.getSize().x / static_cast<float>(2), window.getSize().y / static_cast<float>(2));
-    window.draw(backgroundImgSprite);
-
-    sf::RectangleShape play(sf::Vector2f(350, 150));
-    sf::RectangleShape mapEditor(sf::Vector2f(350, 150));
-
-    sf::Texture buttonTexture;
-    if (!buttonTexture.loadFromFile("../resources/images/Utilities/MenuButtonBorder.png")) {
-        std::cerr << "Failed to load button texture!" << std::endl;
-        return;
-    }
-    play.setPosition((window.getSize().x - 2 * play.getSize().x) / 3, window.getSize().y - 200);
-    play.setTexture(&buttonTexture);
-    sf::FloatRect playButtonBounds = play.getGlobalBounds();
-    window.draw(play);
-
-    mapEditor.setPosition((window.getSize().x - 2 * mapEditor.getSize().x) / 3, window.getSize().y - 200);
-    mapEditor.setTexture(&buttonTexture);
-    mapEditor.setPosition(2 * (window.getSize().x - 2 * mapEditor.getSize().x) / 3 + mapEditor.getSize().x, window.getSize().y - 200);
-    sf::FloatRect mapEditorButtonBounds = mapEditor.getGlobalBounds();
-    window.draw(mapEditor);
-
-    sf::Text playText("Play", font);
-    playText.setCharacterSize(30);
-    playText.setFillColor(sf::Color::White);
-    playText.setPosition(play.getPosition().x + (play.getSize().x - playText.getLocalBounds().width) / 2,
-        play.getPosition().y + (play.getSize().y - playText.getLocalBounds().height) / 2);
-    window.draw(playText);
-
-    sf::Text mapEditorText("Map Editor", font);
-    mapEditorText.setCharacterSize(30);
-    mapEditorText.setFillColor(sf::Color::White);
-    mapEditorText.setPosition(mapEditor.getPosition().x + (mapEditor.getSize().x - mapEditorText.getLocalBounds().width) / 2,
-        mapEditor.getPosition().y + (mapEditor.getSize().y - mapEditorText.getLocalBounds().height) / 2);
-    window.draw(mapEditorText);
+    Camera(sf::Vector2f initialPosition, float zoomFactor = 1.f, float scrollSpeed = 5.f)
+        : position(initialPosition), zoomFactor(zoomFactor), scrollSpeed(scrollSpeed) {}
 
 
+    void updateEdgeScrolling(const sf::RenderWindow& window) {
+        const int EDGE_THRESHOLD = 70;
+        sf::Vector2i mousePosition = sf::Mouse::getPosition(window);
 
-    sf::Vector2i mousePos = sf::Mouse::getPosition(window);
-    
-    bool wasLeftButtonPressedLastFrame = false;
-    bool isLeftButtonPressed = sf::Mouse::isButtonPressed(sf::Mouse::Left);
+        if (mousePosition.x < EDGE_THRESHOLD) {
+            position.x -= scrollSpeed;
+        }
+        else if (mousePosition.x > window.getSize().x - EDGE_THRESHOLD) {
+            position.x += scrollSpeed;
+        }
 
-    if (playButtonBounds.contains(static_cast<float>(mousePos.x), static_cast<float>(mousePos.y))) {
-        if (isLeftButtonPressed && !wasLeftButtonPressedLastFrame) {
-            options = { false, true, false };
-            window.clear(sf::Color::Black);
+        if (mousePosition.y < EDGE_THRESHOLD) {
+            position.y -= scrollSpeed;
+        }
+        else if (mousePosition.y > window.getSize().y - EDGE_THRESHOLD) {
+            position.y += scrollSpeed;
         }
     }
 
-    if (mapEditorButtonBounds.contains(static_cast<float>(mousePos.x), static_cast<float>(mousePos.y))) {
-        if (isLeftButtonPressed && !wasLeftButtonPressedLastFrame) {
-            options = { false, false, true };
-            window.clear(sf::Color::Black);
-        }
+    void updateZoom(int scrollDelta) {
+        zoomFactor = std::max(0.1f, zoomFactor + scrollDelta * 0.05f);
     }
-    
-    window.display();
-}
 
-void setInitialCursorIcon(sf::RenderWindow& window)
-{
-    sf::Image cursorImage;
-    if (!cursorImage.loadFromFile("../resources/images/Utilities/cursorIcon.png"))
-    {
-        throw std::runtime_error("Failed to load cursor image!");
+    sf::Vector2f convertWorldToView(const sf::Vector2f& worldPos) const {
+        return (worldPos - position) * zoomFactor;
     }
-    sf::Cursor cursor;
-    cursor.loadFromPixels(cursorImage.getPixelsPtr(), cursorImage.getSize(), sf::Vector2u(0, 0));
-    window.setMouseCursor(cursor);
-}
 
-
-void TemporaryPlayFunction(sf::RenderWindow* window)
-{
-    GameState gameState = GameState();
-    AnimationManager animationManager = AnimationManager();
-    
-    gameState.clearAndInitializeMap();
-
-    std::cout << "initialized game" << std::endl;
-
-    while(window->isOpen())
-    {
-        sf::Event e;
-
-        while (window->pollEvent(e))
-        {
-            if (e.type == sf::Event::Closed) window->close();
-            if (e.type == sf::Event::KeyPressed && e.key.code == sf::Keyboard::Escape) window->close();
-
-        }
-
-        window->clear(sf::Color::Black);
-
-        animationManager.renderTerrainMap(window, &gameState);
-
-        window->display();
+    sf::Vector2f convertViewToWorld(const sf::Vector2f& viewPos) const {
+        return viewPos / zoomFactor + position;
     }
-}
+
+    void applyTransform(sf::RenderWindow& window) const {
+        sf::View view = window.getView();
+        view.setCenter(position);
+        view.setSize(window.getSize().x / zoomFactor * 1.5f, window.getSize().y / zoomFactor * 1.5f);
+        window.setView(view);
+    }
+};
+
+class Unit {
+public:
+    sf::Vector2f position;
+    float radius;
+    bool isSelected;
+
+    Unit(sf::Vector2f initialPosition, float radius)
+        : position(initialPosition), radius(radius), isSelected(false) {}
+
+    void draw(sf::RenderWindow& window) {
+        sf::CircleShape shape(radius);
+        shape.setPosition(position);
+        shape.setFillColor(isSelected ? sf::Color::Green : sf::Color::Blue);
+        window.draw(shape);
+    }
+
+    void moveTo(const sf::Vector2f& destination) {
+        position = destination;
+    }
+
+    bool contains(const sf::Vector2f& point) const {
+        float dx = point.x - (position.x + radius);
+        float dy = point.y - (position.y + radius);
+        return (dx * dx + dy * dy) <= (radius * radius);
+    }
+};
+
 
 int main() {
-    sf::VideoMode desktopMode = sf::VideoMode::getDesktopMode();
-    sf::RenderWindow window(sf::VideoMode(desktopMode.width, desktopMode.height), "The Great War", sf::Style::Fullscreen);
-    setInitialCursorIcon(window);
+    sf::RenderWindow window(sf::VideoMode::getDesktopMode(), "Quadtree Visualization", sf::Style::Fullscreen);
+    Quadtree root(sf::FloatRect(0.0f, 0.0f, static_cast<float>(window.getSize().x), static_cast<float>(window.getSize().y)), 3);
 
-    MainMenuOptions options;
+    sf::Vector2f windowCenter(window.getSize().x / 2.0f, window.getSize().y / 2.0f);
+    Camera camera(windowCenter);
 
-    while (window.isOpen()) 
-    {       
-        if (options.mainMenu)
-        {
-            mainMenu(window, options);
+    Unit myUnit(windowCenter, 30.0f);
+
+
+    root.subdivide();
+
+    sf::Vector2i previousMousePosition = sf::Mouse::getPosition();
+    sf::Clock clock;
+
+    while (window.isOpen()) {
+        sf::Time elapsed = clock.restart();
+        sf::Event event;
+
+        while (window.pollEvent(event)) {
+            if (event.type == sf::Event::Closed) {
+                window.close();
+            }
+            else if (event.type == sf::Event::MouseWheelScrolled) {
+                camera.updateZoom(event.mouseWheelScroll.delta);
+            }
+            else if (event.type == sf::Event::MouseButtonPressed) {
+                sf::Vector2f mousePos = static_cast<sf::Vector2f>(sf::Mouse::getPosition(window));
+
+
+                if (event.mouseButton.button == sf::Mouse::Left) {
+                    // Toggle selection only if the click is within the unit
+                    if (myUnit.contains(mousePos)) {
+                        myUnit.isSelected = !myUnit.isSelected;
+                    }
+                    else {
+                        // Deselect the unit if the click is outside
+                        myUnit.isSelected = false;
+                    }
+                }
+                else if (event.mouseButton.button == sf::Mouse::Right && myUnit.isSelected) {
+                    // Move the unit only if it is selected
+                    myUnit.moveTo(mousePos);
+                }
+            }
         }
-        else if (options.play)
-        {
-            TemporaryPlayFunction(&window);
-        }
-        else if (options.editMap)
-        {
-            window.clear();
-            MapEditor mapEditor;
-            mapEditor.run(window);
+
+
+        sf::Vector2i currentMousePosition = sf::Mouse::getPosition();
+        sf::Vector2i mouseDelta = currentMousePosition - previousMousePosition;
+        previousMousePosition = currentMousePosition;
+
+        camera.updateEdgeScrolling(window);
+
+        window.clear();
+        camera.applyTransform(window);
+        root.draw(window);
+        myUnit.draw(window);
+
+        window.display();
+
+        sf::Time frameTime = sf::seconds(1.0f / 60.0f) - elapsed;
+        if (frameTime > sf::Time::Zero) {
+            sf::sleep(frameTime);
         }
     }
     return 0;
 }
-
